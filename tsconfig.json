@@ -32,6 +32,19 @@
       }
     ]
   },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build --turbopack",
+    "start": "next start",
+    // 👇 add this line
+    "postinstall": "prisma generate"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.15.0"
+  },
+  "devDependencies": {
+    "prisma": "^6.15.0"
+  },
   "include": [
     "next-env.d.ts",
     "**/*.ts",
@@ -41,4 +54,6 @@
   "exclude": [
     "node_modules"
   ]
+  
 }
+
