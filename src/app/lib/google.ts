@@ -1,24 +1,37 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "./authOptions";
 
-export async function googleFetch(path: string, init?: RequestInit) {
-  const session = await getServerSession(authOptions);
-  if (!session || !(session as any).accessToken) {
-    const err = new Error("Not authenticated or missing access token");
-    (err as any).status = 401;
-    throw err;
-  }
-  const res = await fetch(`https://${path}`, {
-    ...init,
+export type GoogleFetchInit = Omit<RequestInit, "headers"> & {
+  accessToken?: string;
+  headers?: Record<string, string>;
+};
+
+/**
+ * Fetch Google APIs with optional bearer token.
+ * Returns `unknown`; call sites should narrow/assert.
+ */
+export async function googleFetch(path: string, init?: GoogleFetchInit): Promise<unknown> {
+  const url = path.startsWith("http") ? path : `https://${path}`;
+  const { accessToken, headers, ...rest } = init ?? {};
+
+  const res = await fetch(url, {
+    ...rest,
     headers: {
-      ...(init?.headers || {}),
-      Authorization: `Bearer ${(session as any).accessToken}`,
+      ...(headers ?? {}),
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
     },
-    cache: "no-store",
   });
+
+  const contentType = res.headers.get("content-type") ?? "";
+  const body: unknown = contentType.includes("application/json")
+    ? await res.json()
+    : await res.text();
+
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Google API ${res.status}: ${body}`);
+    const msg = typeof body === "string" ? body : JSON.stringify(body);
+    throw new Error(msg || `HTTP ${res.status}`);
   }
-  return res.json();
+
+  return body;
 }
+

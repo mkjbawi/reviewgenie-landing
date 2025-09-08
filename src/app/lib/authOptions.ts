@@ -1,16 +1,46 @@
 import { PrismaAdapter } from "@next-auth/prisma-adapter";
 import GoogleProvider from "next-auth/providers/google";
-import type { NextAuthOptions } from "next-auth";
+import type { NextAuthOptions, Account, Profile, Session, User } from "next-auth";
+import type { JWT } from "next-auth/jwt";
 import { prisma } from "../lib/prisma";
 
 const GOOGLE_SCOPE =
   "openid email profile https://www.googleapis.com/auth/business.manage";
 
-async function refreshGoogleAccessToken(token: any) {
+// ---- Type augmentation
+declare module "next-auth" {
+  interface Session {
+    accessToken?: string;
+    accessTokenExpires?: number;
+    error?: "RefreshAccessTokenError";
+    user?: (User & { id?: string }) | null;
+  }
+}
+
+declare module "next-auth/jwt" {
+  interface JWT {
+    userId?: string;
+    accessToken?: string;
+    refreshToken?: string;
+    accessTokenExpires?: number; // epoch ms
+    error?: "RefreshAccessTokenError";
+  }
+}
+
+type TokenWithGoogle = JWT & {
+  refreshToken?: string;
+  accessToken?: string;
+  accessTokenExpires?: number;
+  error?: "RefreshAccessTokenError";
+};
+
+async function refreshGoogleAccessToken(token: TokenWithGoogle): Promise<TokenWithGoogle> {
   try {
+    if (!token.refreshToken) return { ...token, error: "RefreshAccessTokenError" };
+
     const params = new URLSearchParams({
-      client_id: process.env.GOOGLE_CLIENT_ID!,
-      client_secret: process.env.GOOGLE_CLIENT_SECRET!,
+      client_id: process.env.GOOGLE_CLIENT_ID ?? "",
+      client_secret: process.env.GOOGLE_CLIENT_SECRET ?? "",
       grant_type: "refresh_token",
       refresh_token: token.refreshToken,
     });
@@ -21,18 +51,32 @@ async function refreshGoogleAccessToken(token: any) {
       body: params.toString(),
     });
 
-    const data = await res.json();
-    if (!res.ok) throw data;
+    const raw: unknown = await res.json();
+    if (!res.ok || typeof raw !== "object" || raw === null) {
+      throw new Error("Failed to refresh token");
+    }
+
+    const data = raw as {
+      access_token?: string;
+      expires_in?: number;
+      refresh_token?: string;
+    };
+
+    if (!data.access_token || typeof data.expires_in !== "number") {
+      throw new Error("Invalid token response");
+    }
 
     return {
       ...token,
       accessToken: data.access_token,
       accessTokenExpires: Date.now() + data.expires_in * 1000,
       refreshToken: data.refresh_token ?? token.refreshToken,
+      error: undefined,
     };
   } catch (e) {
+    // eslint-disable-next-line no-console
     console.error("Error refreshing access token", e);
-    return { ...token, error: "RefreshAccessTokenError" as const };
+    return { ...token, error: "RefreshAccessTokenError" };
   }
 }
 
@@ -41,38 +85,75 @@ export const authOptions: NextAuthOptions = {
   session: { strategy: "jwt" },
   providers: [
     GoogleProvider({
-      clientId: process.env.GOOGLE_CLIENT_ID!,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+      clientId: process.env.GOOGLE_CLIENT_ID ?? "",
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
       authorization: {
         params: { scope: GOOGLE_SCOPE, access_type: "offline", prompt: "consent" },
       },
     }),
   ],
   callbacks: {
-    async jwt({ token, account, user }) {
+    async jwt({
+      token,
+      account,
+      user,
+      profile,
+    }: {
+      token: JWT;
+      account?: Account | null;
+      user?: User | null;
+      profile?: Profile | null;
+    }): Promise<JWT> {
+      // Initial sign-in: persist provider tokens
       if (account && user) {
+        const acc = account as Account & {
+          access_token?: string;
+          refresh_token?: string;
+          expires_at?: number;
+        };
+
         return {
           ...token,
           userId: user.id,
-          accessToken: account.access_token,
-          refreshToken: account.refresh_token,
-          accessTokenExpires: account.expires_at ? account.expires_at * 1000 : undefined,
+          accessToken: acc.access_token,
+          refreshToken: acc.refresh_token ?? (token as JWT).refreshToken,
+          accessTokenExpires: acc.expires_at ? acc.expires_at * 1000 : (token as JWT).accessTokenExpires,
         };
       }
-      // AFTER (safe narrowing)
-const expires = (token as any).accessTokenExpires;
-if ((token as any).accessToken && typeof expires === "number" && Date.now() < expires) {
-  return token;
-}
 
-      if (token.refreshToken) return await refreshGoogleAccessToken(token);
+      const t = token as TokenWithGoogle;
+
+      // If token is still valid, return it
+      if (t.accessToken && typeof t.accessTokenExpires === "number" && Date.now() < t.accessTokenExpires) {
+        return token;
+      }
+
+      // Otherwise try to refresh
+      if (t.refreshToken) {
+        return await refreshGoogleAccessToken(t);
+      }
+
       return token;
     },
-    async session({ session, token }) {
-      if (token?.userId) (session.user as any).id = token.userId;
-      (session as any).accessToken = (token as any).accessToken;
-      (session as any).accessTokenExpires = (token as any).accessTokenExpires;
-      (session as any).error = (token as any).error;
+
+    async session({
+      session,
+      token,
+    }: {
+      session: Session;
+      token: JWT;
+    }): Promise<Session> {
+      const t = token as TokenWithGoogle;
+
+      if (session.user && t.userId) {
+        // assign only when defined; id is optional in augmentation
+        (session.user as Partial<User> & { id?: string }).id = t.userId;
+      }
+
+      session.accessToken = t.accessToken;
+      session.accessTokenExpires = t.accessTokenExpires;
+      session.error = t.error;
+
       return session;
     },
   },
