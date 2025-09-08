@@ -75,7 +75,6 @@ async function refreshGoogleAccessToken(token: TokenWithGoogle): Promise<TokenWi
     };
   } catch (e) {
     // eslint-disable-next-line no-console
-    console.error("Error refreshing access token", e);
     return { ...token, error: "RefreshAccessTokenError" };
   }
 }
@@ -94,16 +93,16 @@ export const authOptions: NextAuthOptions = {
   ],
   callbacks: {
     async jwt({
-      token,
-      account,
-      user,
-      profile,
-    }: {
-      token: JWT;
-      account?: Account | null;
-      user?: User | null;
-      profile?: Profile | null;
-    }): Promise<JWT> {
+  token,
+  account,
+  user,
+  profile: _profile, // <- underscore
+}: {
+  token: JWT;
+  account?: Account | null;
+  user?: User | null;
+  profile?: Profile | null;
+}): Promise<JWT> {
       // Initial sign-in: persist provider tokens
       if (account && user) {
         const acc = account as Account & {

@@ -1,5 +1,3 @@
-import { getServerSession } from "next-auth";
-import { authOptions } from "./authOptions";
 
 export type GoogleFetchInit = Omit<RequestInit, "headers"> & {
   accessToken?: string;
